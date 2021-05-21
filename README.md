@@ -1,2 +1,2 @@
-# coex2
-test 1
+# Eléments d'analyse du corpus coex
+
