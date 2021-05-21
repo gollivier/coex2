@@ -1,0 +1,379 @@
+---
+title: "Retraitement du corpus COEX traité par CorText"
+author: "G Ollivier"
+date: "last update: `r Sys.time() `"
+output: 
+  #github_document: default
+  bookdown::html_document2:
+    toc: true
+    toc_float:    
+      collapsed: no
+      smooth_scroll: yes
+    number_sections: yes
+    code_folding: hide
+    keep_md: yes
+    highlight: haddock
+    theme: flatly
+    base_format: rmarkdown::html_document
+    df_print: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F,  warning=F, message=F)
+#dir = 'D:/Appui Methodologique/Departements/SAD/Priorite Coexistence/Corpus/2017-21128/output'
+## setting working directory
+#knitr::opts_knit$set(root.dir = dir)
+# knitr::knit(input=dir)
+rm(list=ls(all=T))
+# parsing corpus ####
+# TODO:
+
+# mise en forme page (largeur) et tableau :
+   # numérotation des figures : 
+#   It seems your data is too big for client-side DataTables. You may consider server-side processing: https://rstudio.github.io/DT/server.html
+
+# passer à une mise en ligne via github ?
+
+```
+
+
+# Chargement des données
+ On récupère les bases de données générées par CorText pour le corpus complet et les sous corpus par macro-thèmes. Puis, ces fichiers sont combinés et donnent des informations sur les thèmes macro et micro.
+ 
+```{r loading_function, message=FALSE, warning=FALSE, include=FALSE, echo=F}
+source("D:\\Informatique\\Programmation\\R\\Projets perso\\MY_FUNCTIONS\\functions.R", encoding = 'UTF-8', echo = T)
+library(DT)  # table interactive, avec search  et scroll
+library(viridis)
+library(ggpubr)
+library(ggrepel)
+library(RColorBrewer)
+pal <- c(brewer.pal(n=12, 'Paired'), brewer.pal(n=8, 'Dark2')) %>% rev()  # Dark2  Set2
+# display.brewer.all(7, type='qual')
+options(ggplot2.discrete.color = pal , ggplot2.discrete.fill=pal)
+
+```
+
+
+```{r cortext_db_macro, message=FALSE, warning=TRUE,  echo=F}
+# on est autonome du fichier d'origine
+# on récupère le corpus cortext et les sous corpus directement sur la pf CorText
+
+# 1er découpage (macro thèmes)
+step1 <- get_cortext_corpus('https://assets.cortext.net/docs/05b656f701fa88439367f5d1699987a5', corpus='tout')  # n=500, standard
+unique(step1$corp$macro_cluster_label)
+
+# correspondance cluster - nouveau label
+macro_labels <- data.frame(macro_cluster_label =c("ministre de l'Agriculture & FNSEA", "rendements & sols","producteurs & marques", "défis & croissance" ), 
+                           macro_cluster_label_new = c('Political framings', 'Science', 'Market configuration', 'Global issue'))
+step1$corp  <- step1$corp %>% dplyr::rename(macro_cluster_label='cluster_label') 
+macro_synth<- step1$cluster_synthesis %>% left_join( macro_labels , by=c(cluster_label='macro_cluster_label'))
+
+macro_synth <- macro_synth %>% 
+  select(macro_cluster_label_new, n_term, n_doc,density, top_terms_weight, top_term_freq, top_term_tfidf, top_term_specif_freq)  
+step1$corp  <- step1$corp %>% left_join(macro_labels, by=c(macro_cluster_label='macro_cluster_label'))
+
+```
+
+
+```{r cortext_db_micro}
+# 2nd découpage (sous thèmes)
+step2_politics <- get_cortext_corpus('https://assets.cortext.net/docs/d03ac3dcf32cccab86fae3160b173609', corpus='Political framings') # n=250, standard
+step2_science <- get_cortext_corpus('https://assets.cortext.net/docs/53bbb86ea24815754ce1d147368b5d9c', corpus='Science') # n=150, standard
+step2_market <- get_cortext_corpus('https://assets.cortext.net/docs/cd730384f2767f217f015323bea83d41', corpus='Market configuration') # n=150, standard
+step2_global <- get_cortext_corpus('https://assets.cortext.net/docs/0a5bc734c39d3268ae07a8976fe5bb4b', corpus='Global issue') # n=250, standard
+```
+
+
+```{r group_data, include=FALSE}
+# Tableau total : id_doc...
+corp_cortext <- bind_rows(step2_politics$corp, step2_science$corp, step2_market$corp, step2_global$corp) # compil sous clusters
+# add variable macro-cluster
+corp_cortext <- corp_cortext %>% 
+  dplyr::full_join(step1$corp  %>% dplyr::select(id_doc_origin, macro_cluster_label_new) , by=c(id_doc_origin='id_doc_origin'))
+
+# check corresp macro/micro : # !!!!! apparamment des chevauchements !!!!!  => lié au recalcule de step1 ??
+# relativement marginal, concerne des petits corpus
+corr_macro_micro_cluster <- corp_cortext %>% group_by(cluster_label, macro_cluster_label_new ) %>% summarize(n_doc=n_distinct(id_doc_origin)) %>% ungroup %>%
+  arrange(cluster_label, macro_cluster_label_new, desc(n_doc))   # n= 39
+# on filoute en prenant la macro cat la plus importante par cluster
+corr_macro_micro_cluster <- corr_macro_micro_cluster %>%  arrange(desc(n_doc) ) %>%  group_by(cluster_label ) %>% slice_head( n=1)  # n=25
+
+# ON vérifie en croisant les différents sources de macro_cluster
+table( corp_cortext$cluster_label, corp_cortext$corpus) %>% prop.table(margin = 1  )  %>% round(2) # ok pr catégorisation manuelle
+table(corp_cortext$corpus, corp_cortext$macro_cluster_label_new) # quelques doc divergents
+table( corp_cortext$cluster_label, corp_cortext$macro_cluster_label_new)  # divergences ds le détail
+prop.table(  table( corp_cortext$cluster_label, corp_cortext$macro_cluster_label_new), margin = 1  ) %>% round(2) %>% heatmap()
+ 
+# cleaning 
+library(forcats)
+corp_cortext <- corp_cortext %>% mutate(typsrc_en=typsrc %>% tolower) %>% # refactor
+  mutate(typsrc_en= forcats::fct_recode(typsrc_en , `national press`='presse généraliste nationale', `national press`='agence de presse',
+                                       `mainstream agricultural press` ='presse agricole',
+                                       `mainstream agricultural press` ='opa majoritaire',
+                                       `minority farm unions`='opa minoritaire',
+                                       `ngo`='ong', `ngo`='fondation', others='media social',
+                                       research='recherche', `local press`='presse généraliste locale',
+                                       `alternative & environmentalist press`='presse environnementale',
+                                       `economic press`='presse économique',
+                                       `alternative & environmentalist press`='presse alternative',`authorities` ='pouvoir public', `political party`='parti politique',
+                                       `others`='autres', `others`='style de vie', `others`='presse religieuse'))
+ 
+# correspondance clusters - nouveau label
+unique(corp_cortext$cluster_label)
+cluster_labels <- data.frame( cluster_label= c(
+"militants & agribashing"   ,              "production & marché"  ,                   "commune & politique"        ,            
+ "initiatives & écologie"          ,        "agriculture & @Stephane_Travert@" ,       "PAC & propositions"    ,                 
+ "projet de loi & néonicotinoides"    ,     "alimentation & CO2"              ,        "production & nourriture"  ,              
+ "histoire & société"             ,         "insectes & betteraves"             ,      "territoires & acteurs",                  
+ "modèle & biodiversité"            ,       "alimentaire & alimentation"     ,         "agricole & terres"  ,                    
+ "économie & Covid"            ,            "restauration collective & développement", "confinement & offre"  ,                  
+ "règles & cahier des charges"   ,          "éleveurs & français"  ,                   "cultures & enjeux",                      
+ "demande & ressources naturelles"    ,     "association & industriels"    ,           "secteur & appui" ,                       
+ "sécurité alimentaire & besoin"      
+)
+, cluster_label_new =
+  c(
+    "militants & agribashing"   ,              "production & marché"  ,                   "commune & politique"        ,            
+    "initiatives & écologie"          ,        "agriculture & @Stephane_Travert@" ,       "PAC & propositions"    ,                 
+    "projet de loi & néonicotinoides"    ,     "alimentation & CO2"              ,        "production & nourriture"  ,              
+    "histoire & société"             ,         "insectes & betteraves"             ,      "territoires & acteurs",                  
+    "modèle & biodiversité"            ,       "alimentaire & alimentation"     ,         "agricole & terres"  ,                    
+    "économie & Covid"            ,            "restauration collective & développement", "confinement & offre"  ,                  
+    "règles & cahier des charges"   ,          "éleveurs & français"  ,                   "cultures & enjeux",                      
+    "demande & ressources naturelles"    ,     "association & industriels"    ,           "secteur & appui" ,                       
+    "sécurité alimentaire & besoin"      
+  )
+)
+###
+# ajout nouveau label
+corp_cortext <- corp_cortext %>% left_join(cluster_labels, by=c(cluster_label='cluster_label'))
+
+# Modalités les plus associées (chi2)  : ici comparativement à tous les autres (et non par macro-theme)
+
+  most_linked_meta <- data.frame(cluster_label=unique(corp_cortext$cluster_label))
+  for (md in c('id_doc_cortext','year_month' ,'pays','src', 'typsrc_en')) { 
+         most_linked <- chi2_significant_modality(df=corp_cortext, var1='cluster_label', var2=md)
+         colnames(most_linked) <- c('cluster_label',  paste0(md, '_signif_modal'))
+         most_linked_meta <- most_linked_meta %>% left_join( most_linked, by=c(cluster_label='cluster_label') )
+      }
+
+
+# tableau des doct les plus représentatifs de chaque cluster : 
+most_representative_doc_by_cluster <- bind_rows(step2_politics$most_representative_doc_by_cluster, step2_science$most_representative_doc_by_cluster, step2_market$most_representative_doc_by_cluster, step2_global$most_representative_doc_by_cluster)
+
+most_representative_doc_by_cluster <- most_representative_doc_by_cluster %>% 
+  full_join(step1$corp  %>% select(id_doc_cortext, macro_cluster_label_new) , by=c(id_doc_cortext='id_doc_cortext'))
+ 
+
+# tableau de synthèse de chaque cluster et macro-cluster
+cluster_synthesis <- bind_rows(step2_politics$cluster_synthesis, step2_science$cluster_synthesis, step2_market$cluster_synthesis, step2_global$cluster_synthesis)
+
+cluster_synthesis <- cluster_synthesis %>% 
+  full_join(corr_macro_micro_cluster  %>% select(cluster_label, macro_cluster_label_new) , by=c(cluster_label='cluster_label'))
+  cluster_synthesis <- cluster_synthesis  %>% left_join(most_linked_meta, by=c(cluster_label='cluster_label'))
+
+
+# ajout nouveau label
+corp_cortext <- corp_cortext %>% left_join(cluster_labels, by=c(cluster_label='cluster_label'))
+
+# tableau des doct les plus représentatifs de chaque cluster : 
+most_representative_doc_by_cluster <- bind_rows(step2_politics$most_representative_doc_by_cluster, step2_science$most_representative_doc_by_cluster, step2_market$most_representative_doc_by_cluster, step2_global$most_representative_doc_by_cluster)
+
+most_representative_doc_by_cluster <- most_representative_doc_by_cluster %>% 
+  full_join(step1$corp  %>% select(id_doc_cortext, macro_cluster_label_new) , by=c(id_doc_cortext='id_doc_cortext'))
+ 
+
+# tableau de synthèse de chaque cluster et macro-cluster
+cluster_synthesis <- bind_rows(step2_politics$cluster_synthesis, step2_science$cluster_synthesis, step2_market$cluster_synthesis, step2_global$cluster_synthesis)
+
+cluster_synthesis <- cluster_synthesis %>% 
+  full_join(corr_macro_micro_cluster  %>% select(cluster_label, macro_cluster_label_new) , by=c(cluster_label='cluster_label'))
+
+```
+
+
+# Results
+
+## Description of Corpus
+
+### Corpus dynamics
+```{r corpus_dyn, fig.caption='Temporal distribution of documents'}
+corp_cortext  %>% ggplot() + geom_bar(aes(x=year_month), stat='count') + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 0))
+
+# ajout d'évènements ?
+
+```
+
+
+### Sources
+```{r sources,fig.caption='Top sources and their type', fig.height=7, fig.width=6}
+top=40
+g_so <- corp_cortext %>% dplyr::group_by(src, typsrc_en) %>% dplyr::summarise(n=n()) %>% arrange(desc(n)) %>% head(top)  %>% 
+  ggplot(aes(x=reorder(src, n), y=n, fill=reorder(typsrc_en, n)) )   + geom_bar( stat='identity') + coord_flip() + 
+  labs(y='# publications', x=paste0('sources (top ', top, ')'), fill='type source') + theme_bw()  
+
+ggsave(g_so, filename='sources.png')
+g_so
+```
+
+```{r source_types}
+g_typ_so <- corp_cortext %>% dplyr::group_by(typsrc_en) %>% dplyr::summarise(n=n()) %>% mutate(f=100*n/sum(n) %>% round(1)) %>% arrange(desc(n)) %>% 
+    ggplot(aes(x="", y=n, fill=reorder(typsrc_en, n)  )) +
+    geom_bar(stat="identity", width=1, color='white') +
+    coord_polar("y", start=0) +
+    geom_text_repel(aes(x=1.65, label = paste0( round(f,1), "%")), position = position_stack(vjust=0.5)) +
+    labs(x = NULL, y = NULL, fill = NULL) + theme_void()
+  
+  ggsave(g_typ_so, filename='sources_type.png')
+  g_typ_so
+```
+
+```{r eval=FALSE, include=FALSE}
+
+
+ggarrange(g_so, g_typ_so, common.legend = T, widths=c(3,1), legend='bottom')   
+   # pb sur legende
+```
+
+  
+
+```{r source_type_dyn, fig.caption='Temporal distribution of source types'}
+
+corp_cortext  %>% ggplot() + geom_bar(aes(x=year_month, fill=  typsrc_en  ), stat='count', position='fill') + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 0))  # mieux ordonner ?
+```
+
+```{r eval=FALSE, include=FALSE}
+# veilleurs ####
+corp_cortext %>% dplyr::group_by(veilleur, year_month) %>% dplyr::summarise(n=n()) %>% arrange(desc(n)) %>% head(top)  %>% 
+  ggplot(aes(fill=reorder(veilleur, n),x=year_month, y=n)) + geom_bar( stat='identity') + coord_flip() + 
+  labs(y='# publications', x=paste0('sources (top ', top, ')'), fill='type source') + theme_bw()
+```
+
+## Macro themes
+### synthesis
+```{r macro_synthesis}
+
+macro_synth %>% select(-density) %>% DT::datatable(selection ='multiple', style='default', class = 'cell-border stripe', escape=T, colnames = c('cluster'='macro_cluster_label_new'), filter = 'top',  options=list( autoWidth = T, pageLength = 5, searchHighlight = T) ) #
+# todo supprimer col rowname, ajuster largeurs
+
+```
+
+### macro-clusters through time
+```{r macro_dyn}
+
+ g_dyn <- step1$corp %>% group_by(macro_cluster_label_new, year_month) %>% 
+  summarize(n=n(), mean=mean(date), min=min(date), max=max(date)) %>%
+   ggplot(aes(x=year_month, y=reorder(macro_cluster_label_new, mean) ) ) +
+   geom_point(aes(size=n), alpha=0.5) + 
+   scale_size(range = c(1, 10)  ) + #geom_vline(xintercept = seq(from=2012, to=2020, by = 1), 'red') +
+   theme(axis.text.x = element_text(angle = 90)) + labs(x='Time', y='Macro-themes', size='# documents')
+ ggsave(g_dyn, filename=paste0('macro_cluster_dynamic.png'), width=8, height=6, dpi=300)
+g_dyn
+
+```
+
+```{r macro_dyn_histo, echo=FALSE, fig.cap="Temporal distribution of documents per macro-themes"}
+corp_cortext %>% ggplot(aes(x=year_month) ) + geom_bar(stat='count') + facet_wrap(~ corpus, ncol=1) +theme(axis.text.x = element_text(angle = 90)) + labs(y="# documents", 'time')
+
+
+
+```
+
+
+## Micro themes (all)
+
+
+### Synthesis
+```{r}
+# select cols, reorder them, resize some
+
+cluster_synthesis %>% DT::datatable(selection ='multiple', style='default', class = 'cell-border stripe', escape=T, colnames = c('cluster'='cluster_label'), filter = 'top',  options=list( autoWidth = TRUE, digits=1) ) %>% DT::formatRound(columns='density',digits=2)
+
+```
+
+### clusters through time
+```{r micro_themes_dyn, fig.cap='Temporal distribution of documents by micro-themes', fig.width=12, fig.height=10}
+#corp_cortext %>% ggplot(aes(x=year_month) ) + geom_bar(stat='count') + facet_grid(cluster_label ~ corpus, scales='free_y' ) +theme(axis.text.x = element_text(angle = 90)) + labs(y="# documents", 'time')
+
+
+corp_cortext %>% ggplot(aes(x=year_month, fill=corpus) ) + geom_bar(stat='count') + facet_wrap( corpus~   cluster_label ) + theme(axis.text.x = element_text(angle = 90)) + labs(y="# documents", 'time')
+
+```
+
+
+### Most representative documents
+```{r message=FALSE, warning=FALSE}
+
+most_representative_doc_by_cluster   %>% select(- id_doc_cortext, - id_doc_origin , -suprathematique) %>%
+  DT::datatable(selection ='multiple', style='default', class = 'cell-border stripe',   filter = 'top', options=list(searchHighlight = TRUE, regex = T, caseInsensitive = T, autoWidth = F, digits=1) ) %>% DT::formatRound(columns='doc2cluster_weight',digits=0) #%>% DT::formatRound(columns='density',digits=2)
+
+```
+
+
+
+<!-- ### Politics -->
+<!-- #### synthesis -->
+<!-- ```{r} -->
+
+
+<!-- ``` -->
+
+
+<!-- #### cluster through time -->
+<!-- ```{r} -->
+
+<!-- ``` -->
+
+
+
+<!-- ### Science -->
+<!-- #### synthesis -->
+
+<!-- #### cluster through time -->
+
+<!-- #### Most representative documents -->
+
+
+<!-- ### Market -->
+<!-- #### synthesis -->
+
+<!-- #### cluster through time -->
+
+<!-- #### Most representative documents -->
+
+<!-- ### Global issue -->
+<!-- #### synthesis -->
+
+<!-- #### cluster through time -->
+
+<!-- #### Most representative documents -->
+
+
+```{r eval=FALSE, include=FALSE}
+# RAPPORT
+
+library(officer)
+report <- officer::read_docx() %>% body_add_par(value='Results', style='heading 1') %>% 
+  body_add_par(value='Features coming from treatments of CorText outputs with R.')
+  body_add_break() %>% body_end_section_landscape()
+
+report <- report %>% body_add_par(value='Macro themes', style='heading 2') %>% 
+      body_add_table(macro_synth, style = "table_template", font.size = 9) %>% body_add_break()
+
+# Les principaux textes par clusters
+
+
+report <- report %>% body_add_par(value='Most representative texts per clusters', style='heading 2')
+
+for (cl in most_representative_doc_by_cluster$cluster_label) { 
+  tab <- most_representative_doc_by_cluster %>% subset(cluster_label==cl) %>% select(date, pays, src, text)
+  
+  report <- report %>% body_add_par(value=cl, style='heading 3')  %>% 
+      body_add_table(  tab , style = "table_template") %>% 
+      body_add_break()
+}
+
+# Saving the report
+print(report, target = "COEX_report.docx")
+#################
+```
